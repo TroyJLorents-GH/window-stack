@@ -8,19 +8,27 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from window_manager import discover_windows, move_window, focus_window, inject_text, minimize_window
-from layouts import apply_layout, get_available_layouts, get_layout_slots
+from layouts import apply_layout, get_available_layouts
+from transcriber import transcribe_audio
+import overlay
 
 
 # Connected WebSocket clients
 connected_clients: set[WebSocket] = set()
 
+# Track which window is the "active target" for voice
+active_target_hwnd: int | None = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start background tasks on startup."""
+    overlay.start()
+    print("  Overlay started — terminals will glow when selected")
     task = asyncio.create_task(broadcast_window_state())
     yield
     task.cancel()
+    overlay.stop()
 
 
 app = FastAPI(title="Window Commander", lifespan=lifespan)
@@ -41,6 +49,7 @@ async def broadcast_window_state():
             message = json.dumps({
                 "type": "window_state",
                 "windows": [w.to_dict() for w in windows],
+                "active_target": active_target_hwnd,
             })
             disconnected = set()
             for client in connected_clients:
@@ -50,6 +59,20 @@ async def broadcast_window_state():
                     disconnected.add(client)
             connected_clients -= disconnected
         await asyncio.sleep(1)
+
+
+def _set_active_target(hwnd: int | None, process_name: str = ""):
+    """Set the active target window and update overlay."""
+    global active_target_hwnd
+    active_target_hwnd = hwnd
+
+    if hwnd and overlay.is_terminal(process_name):
+        overlay.set_target(hwnd, "green")
+    elif hwnd:
+        # Non-terminal windows get a subtle blue highlight
+        overlay.set_target(hwnd, "blue")
+    else:
+        overlay.set_target(None, "off")
 
 
 # --- REST endpoints ---
@@ -146,6 +169,28 @@ def inject_text_endpoint(body: dict):
     return {"success": success}
 
 
+@app.post("/voice/transcribe")
+def transcribe_endpoint(body: dict):
+    """Transcribe audio and optionally inject into active window.
+
+    Body: { "audio": "<base64>", "format": "wav", "inject": true }
+    """
+    audio = body.get("audio", "")
+    fmt = body.get("format", "wav")
+    should_inject = body.get("inject", True)
+
+    if not audio:
+        return {"error": "audio is required"}
+
+    result = transcribe_audio(audio, fmt)
+
+    if result["success"] and should_inject and active_target_hwnd:
+        inject_text(active_target_hwnd, result["text"])
+        result["injected_to"] = active_target_hwnd
+
+    return result
+
+
 # --- WebSocket ---
 
 @app.websocket("/ws")
@@ -160,6 +205,7 @@ async def websocket_endpoint(ws: WebSocket):
     await ws.send_text(json.dumps({
         "type": "window_state",
         "windows": [w.to_dict() for w in windows],
+        "active_target": active_target_hwnd,
     }))
 
     # Send available layouts
@@ -185,7 +231,11 @@ def handle_ws_message(msg: dict) -> dict:
 
     if action == "get_windows":
         windows = discover_windows()
-        return {"type": "window_state", "windows": [w.to_dict() for w in windows]}
+        return {
+            "type": "window_state",
+            "windows": [w.to_dict() for w in windows],
+            "active_target": active_target_hwnd,
+        }
 
     elif action == "apply_layout":
         layout = msg.get("layout")
@@ -202,12 +252,63 @@ def handle_ws_message(msg: dict) -> dict:
         return {"type": "window_moved", "success": success}
 
     elif action == "focus_window":
-        success = focus_window(msg["hwnd"])
-        return {"type": "window_focused", "success": success}
+        hwnd = msg["hwnd"]
+        process_name = msg.get("process_name", "")
+        success = focus_window(hwnd)
+        if success:
+            _set_active_target(hwnd, process_name)
+        return {
+            "type": "window_focused",
+            "success": success,
+            "is_terminal": overlay.is_terminal(process_name),
+        }
+
+    elif action == "select_target":
+        # Select a window as voice target without focusing it
+        hwnd = msg["hwnd"]
+        process_name = msg.get("process_name", "")
+        _set_active_target(hwnd, process_name)
+        return {
+            "type": "target_selected",
+            "hwnd": hwnd,
+            "is_terminal": overlay.is_terminal(process_name),
+        }
+
+    elif action == "clear_target":
+        _set_active_target(None)
+        return {"type": "target_cleared"}
+
+    elif action == "voice_start":
+        # Phone started listening — turn overlay to red (listening)
+        overlay.set_color("listening")
+        return {"type": "voice_status", "status": "listening"}
+
+    elif action == "voice_stop":
+        # Phone stopped listening — back to green
+        overlay.set_color("green")
+        return {"type": "voice_status", "status": "ready"}
+
+    elif action == "voice_transcribe":
+        # Receive audio from phone, transcribe with Whisper, inject into terminal
+        audio = msg.get("audio", "")
+        fmt = msg.get("format", "m4a")
+        overlay.set_color("blue")  # Processing
+
+        result = transcribe_audio(audio, fmt)
+
+        if result["success"] and active_target_hwnd:
+            inject_text(active_target_hwnd, result["text"], press_enter=True)
+            result["injected_to"] = active_target_hwnd
+
+        overlay.set_color("green")  # Back to ready
+        return {"type": "voice_result", **result}
 
     elif action == "inject_text":
-        success = inject_text(msg["hwnd"], msg["text"])
-        return {"type": "text_injected", "success": success}
+        hwnd = msg.get("hwnd", active_target_hwnd)
+        if hwnd:
+            success = inject_text(hwnd, msg["text"])
+            return {"type": "text_injected", "success": success}
+        return {"type": "error", "message": "No target window"}
 
     elif action == "get_layouts":
         return {"type": "layouts", "layouts": get_available_layouts()}

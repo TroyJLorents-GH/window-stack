@@ -173,44 +173,40 @@ def minimize_window(hwnd: int) -> bool:
         return False
 
 
-def inject_text(hwnd: int, text: str) -> bool:
-    """Send text to a window by simulating keyboard input.
+def inject_text(hwnd: int, text: str, press_enter: bool = False) -> bool:
+    """Send text to a window via clipboard paste, optionally pressing Enter after.
 
-    Focuses the window first, then uses SendInput to type the text.
-    For terminal windows, clipboard paste (Ctrl+V) is more reliable.
+    Focuses the window, pastes text via Ctrl+V, and if press_enter is True,
+    sends Enter to submit (e.g. in a terminal/CLI).
     """
     try:
-        focus_window(hwnd)
-
         import time
-        time.sleep(0.1)  # Brief pause for focus to take effect
-
-        # Use clipboard paste for reliability (works with terminals)
+        import win32api
         import win32clipboard
 
+        focus_window(hwnd)
+        time.sleep(0.1)
+
+        # Paste text via clipboard
         win32clipboard.OpenClipboard()
         win32clipboard.EmptyClipboard()
         win32clipboard.SetClipboardText(text, win32clipboard.CF_UNICODETEXT)
         win32clipboard.CloseClipboard()
 
-        # Simulate Ctrl+V
+        # Ctrl+V
         VK_CONTROL = 0x11
         VK_V = 0x56
-
-        inputs = []
-
-        # Key down: Ctrl
-        ki_down_ctrl = ctypes.c_ulong(0)
-        inputs.append((1, ctypes.c_ulong(VK_CONTROL), ctypes.c_ulong(0), ctypes.c_ulong(0)))
-
-        # Use SendInput via ctypes for reliability
-        import subprocess
-        # Actually, let's use pyautogui-style approach with win32api
-        import win32api
         win32api.keybd_event(VK_CONTROL, 0, 0, 0)
         win32api.keybd_event(VK_V, 0, 0, 0)
         win32api.keybd_event(VK_V, 0, win32con.KEYEVENTF_KEYUP, 0)
         win32api.keybd_event(VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
+
+        # Auto-send: press Enter
+        if press_enter:
+            time.sleep(0.05)
+            VK_RETURN = 0x0D
+            win32api.keybd_event(VK_RETURN, 0, 0, 0)
+            win32api.keybd_event(VK_RETURN, 0, win32con.KEYEVENTF_KEYUP, 0)
 
         return True
     except Exception as e:

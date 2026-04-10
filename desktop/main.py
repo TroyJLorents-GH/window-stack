@@ -11,7 +11,10 @@ Usage:
 import argparse
 import socket
 
+from dotenv import load_dotenv
 import uvicorn
+
+load_dotenv()
 
 from config import HOST, PORT
 
