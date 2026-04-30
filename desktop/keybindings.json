@@ -1,0 +1,21 @@
+{
+  "ptt": "ctrl_r",
+  "cycle_next": "<ctrl>+<alt>+<right>",
+  "cycle_prev": "<ctrl>+<alt>+<left>",
+  "lock_target": "<ctrl>+<alt>+<space>",
+  "min_record_ms": 250,
+  "press_enter_after_paste": true,
+  "target_processes": [
+    "cursor.exe",
+    "claude.exe",
+    "code.exe",
+    "windsurf.exe",
+    "codex.exe",
+    "windowsterminal.exe",
+    "wezterm-gui.exe",
+    "alacritty.exe",
+    "powershell.exe",
+    "pwsh.exe",
+    "cmd.exe"
+  ]
+}
